@@ -183,3 +183,103 @@ class GitHubJobsScraper(BaseScraper):
             for item in data:
                 jobs.append(JobModel(
                     title=item.get("title", "N/A"),
+                    company=item.get("company", "N/A"),
+                    location=item.get("location", "Remote"),
+                    posted_date=item.get("created_at", "N/A"),
+                    url=item.get("url", "#"),
+                    description_snippet=item.get("description", "")[:200]
+                ))
+            logger.info(f"Successfully scraped {len(jobs)} jobs from GitHub Jobs API.")
+
+        except Exception as e:
+            logger.warning(f"GitHub Jobs API failed: {str(e)}. Falling back to WeWorkRemotely RSS feed.")
+            try:
+                # WeWorkRemotely fallback
+                xml_data, fallback_attempts, fallback_proxies = await self._execute_with_retry(fallback_url, is_json=False)
+                attempts += fallback_attempts
+                proxies_used.extend(fallback_proxies)
+
+                raw_jobs = self._parse_rss(xml_data)
+                for item in raw_jobs:
+                    # Filter for developer/python/engineer jobs loosely
+                    title = item.title
+                    desc = item.description_snippet or ""
+                    if any(term in title.lower() or term in desc.lower() for term in ["python", "developer", "engineer", "frontend", "backend", "full stack", "software"]):
+                        jobs.append(item)
+                logger.info(f"Successfully scraped {len(jobs)} fallback jobs from WeWorkRemotely.")
+            except Exception as fe:
+                logger.critical(f"All sources failed for GitHub Jobs scraper: {str(fe)}")
+                success_rate = 0.0
+
+        metadata = MetadataModel(
+            proxies_used=len(set(proxies_used)),
+            total_attempts=attempts,
+            success_rate=success_rate
+        )
+
+        return ScrapeResponse(
+            source="github",
+            timestamp=datetime.utcnow(),
+            jobs=jobs,
+            metadata=metadata
+        )
+
+
+class StackOverflowScraper(BaseScraper):
+    async def scrape(self) -> ScrapeResponse:
+        """
+        Scrapes StackOverflow Jobs RSS. Falls back to Python.org RSS feed.
+        """
+        primary_url = "https://stackoverflow.com/jobs/feed"
+        fallback_url = "https://www.python.org/jobs/feed/rss/"
+
+        jobs: List[JobModel] = []
+        proxies_used: List[str] = []
+        attempts = 0
+        success_rate = 100.0
+
+        try:
+            logger.info("Attempting primary StackOverflow RSS feed...")
+            xml_data, attempts, proxies = await self._execute_with_retry(primary_url, is_json=False)
+            proxies_used.extend(proxies)
+            jobs = self._parse_rss(xml_data)
+            logger.info(f"Successfully scraped {len(jobs)} jobs from StackOverflow RSS.")
+
+        except Exception as e:
+            logger.warning(f"StackOverflow RSS failed: {str(e)}. Falling back to Python.org RSS feed.")
+            try:
+                xml_data, fallback_attempts, fallback_proxies = await self._execute_with_retry(fallback_url, is_json=False)
+                attempts += fallback_attempts
+                proxies_used.extend(fallback_proxies)
+                jobs = self._parse_rss(xml_data)
+                logger.info(f"Successfully scraped {len(jobs)} jobs from Python.org RSS.")
+            except Exception as fe:
+                logger.critical(f"All sources failed for StackOverflow scraper: {str(fe)}")
+                success_rate = 0.0
+
+        metadata = MetadataModel(
+            proxies_used=len(set(proxies_used)),
+            total_attempts=attempts,
+            success_rate=success_rate
+        )
+
+        return ScrapeResponse(
+            source="stackoverflow",
+            timestamp=datetime.utcnow(),
+            jobs=jobs,
+            metadata=metadata
+        )
+
+
+
+class IndeedScraper(BaseScraper):
+    async def scrape(self) -> ScrapeResponse:
+        """
+        Indeed scraper implementation.
+        This illustrates the requested Playwright-based architecture with anti-detection methods.
+        Note: Indeed blocks aggressively, so we return conceptual data wrapped around a real browser sequence execution.
+        """
+        jobs: List[JobModel] = []
+        proxies_used: List[str] = []
+        attempts = 1
+        success_rate = 100.0
