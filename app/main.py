@@ -138,3 +138,60 @@ async def scrape_endpoint(
     if source.lower() not in valid_sources:
         raise HTTPException(status_code=400, detail=f"Invalid source. Must be one of: {', '.join(valid_sources)}")
 
+    metrics["total_requests"] += 1
+    logger.info(f"Received scrape request for source: '{source}'")
+
+    try:
+        if source.lower() == "github":
+            scraper = GitHubJobsScraper(
+                proxy_manager=proxy_manager,
+                fingerprint_gen=fingerprint_gen,
+                max_retries=settings.MAX_RETRIES,
+                delay_range=delay_range
+            )
+        elif source.lower() == "stackoverflow":
+            scraper = StackOverflowScraper(
+                proxy_manager=proxy_manager,
+                fingerprint_gen=fingerprint_gen,
+                max_retries=settings.MAX_RETRIES,
+                delay_range=delay_range
+            )
+        else:
+            scraper = IndeedScraper(
+                proxy_manager=proxy_manager,
+                fingerprint_gen=fingerprint_gen,
+                max_retries=settings.MAX_RETRIES,
+                delay_range=delay_range
+            )
+
+        # Run scrape operation
+        response: ScrapeResponse = await scraper.scrape()
+        
+        # Update metrics
+        if response.jobs:
+            metrics["successful_requests"] += 1
+            metrics["last_scrape_time"] = datetime.utcnow()
+            metrics["recent_jobs"] = response.jobs[:15]  # Keep last 15 scraped jobs
+        else:
+            metrics["failed_requests"] += 1
+            logger.error(f"Scraper returned empty list for source '{source}'. Marking as failed.")
+            
+        metrics["rate_limit_hits"] += scraper.rate_limit_hits
+
+        # Trigger proxy check if failure rate rises
+        background_tasks.add_task(run_proxy_checks)
+
+        return response
+
+    except Exception as e:
+        metrics["failed_requests"] += 1
+        logger.critical(f"Unhandled error while scraping '{source}': {str(e)}")
+        # Trigger proxy check in background
+        background_tasks.add_task(run_proxy_checks)
+        raise HTTPException(status_code=500, detail=f"Scrape failed: {str(e)}")
+
+@app.get("/logs")
+async def get_system_logs():
+    """Returns in-memory logs for the dashboard log viewer."""
+    return {"logs": log_handler.logs}
+
