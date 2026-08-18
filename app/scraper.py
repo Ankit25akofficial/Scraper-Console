@@ -107,3 +107,79 @@ class BaseScraper:
         if last_exception:
             raise last_exception
         raise Exception(f"Failed to fetch {url} after {self.max_retries} attempts.")
+
+    def _parse_rss(self, xml_content: str) -> List[JobModel]:
+        """
+        Parses RSS XML content using built-in ElementTree and maps to JobModel.
+        """
+        jobs: List[JobModel] = []
+        try:
+            root = ET.fromstring(xml_content)
+            channel = root.find("channel")
+            if channel is None:
+                return []
+
+            for item in channel.findall("item"):
+                title_text = item.findtext("title", "N/A")
+                # RSS titles can be "Job Title at Company Name" or "Company Name: Job Title"
+                company = "N/A"
+                title = title_text
+                if " at " in title_text:
+                    parts = title_text.rsplit(" at ", 1)
+                    title = parts[0].strip()
+                    company = parts[1].strip()
+                elif ":" in title_text:
+                    parts = title_text.split(":", 1)
+                    company = parts[0].strip()
+                    title = parts[1].strip()
+
+                # Format date
+                pub_date = item.findtext("pubDate", "")
+                try:
+                    # Convert 'Tue, 17 Aug 2026 12:00:00 +0000' -> '2026-08-17'
+                    dt = datetime.strptime(pub_date[:25].strip(), "%a, %d %b %Y %H:%M:%S")
+                    posted_date = dt.strftime("%Y-%m-%d")
+                except Exception:
+                    posted_date = pub_date or "N/A"
+
+                description = item.findtext("description", "")
+                # Clean html tags for snippet
+                snippet = description[:200].replace("<p>", "").replace("</p>", "").replace("<br/>", "")
+
+                jobs.append(JobModel(
+                    title=title,
+                    company=company,
+                    location="Remote" if "remote" in title_text.lower() or "remote" in description.lower() else "United States",
+                    posted_date=posted_date,
+                    url=item.findtext("link", "#"),
+                    description_snippet=snippet
+                ))
+        except Exception as e:
+            logger.error(f"Failed to parse RSS XML: {str(e)}")
+        return jobs
+
+
+
+class GitHubJobsScraper(BaseScraper):
+    async def scrape(self) -> ScrapeResponse:
+        """
+        Scrapes GitHub Jobs. Since the official endpoint is deprecated,
+        this will attempt the official URL, and fallback to WeWorkRemotely's RSS feed.
+        """
+        primary_url = "https://jobs.github.com/positions.json?description=python&location=remote"
+        fallback_url = "https://weworkremotely.com/remote-jobs.rss"
+        
+        jobs: List[JobModel] = []
+        proxies_used: List[str] = []
+        attempts = 0
+        success_rate = 100.0
+
+        try:
+            logger.info("Attempting primary GitHub Jobs API scraping...")
+            data, attempts, proxies = await self._execute_with_retry(primary_url, is_json=True)
+            proxies_used.extend(proxies)
+            
+            # Map GitHub Jobs JSON response to JobModel schema
+            for item in data:
+                jobs.append(JobModel(
+                    title=item.get("title", "N/A"),
